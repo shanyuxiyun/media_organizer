@@ -3,6 +3,8 @@ import subprocess
 import threading
 import hashlib
 import time
+import re
+from datetime import datetime
 from queue import Queue
 
 class PhotoOrganizer:
@@ -51,7 +53,6 @@ class PhotoOrganizer:
             thread.start()
             threads.append(thread)
 
-        # Wait for the queue to be empty
         self.file_queue.join()
         self.logger("File analysis complete.")
         self.logger(f"Found {len(self.duplicate_files)} duplicate files.")
@@ -59,14 +60,12 @@ class PhotoOrganizer:
 
     def process_files(self):
         self.logger("Starting file processing...")
-        # Create special directories
         duplicates_dir = os.path.join(self.output_dir, "duplicates")
         no_exif_dir = os.path.join(self.output_dir, "no_exif")
         if not self.dry_run:
             os.makedirs(duplicates_dir, exist_ok=True)
             os.makedirs(no_exif_dir, exist_ok=True)
 
-        # Process unique files
         for file_hash, data in self.file_data.items():
             file_path = data['path']
             if data['datetime']:
@@ -74,7 +73,6 @@ class PhotoOrganizer:
             else:
                 self._move_file_to_no_exif(file_path, no_exif_dir)
 
-        # Process duplicate files
         for file_path in self.duplicate_files:
             self._move_file_to_duplicates(file_path, duplicates_dir)
 
@@ -85,8 +83,8 @@ class PhotoOrganizer:
 
     def _remove_empty_dirs(self):
         self.logger("Removing empty directories from the source...")
-        for dirpath, dirnames, filenames in os.walk(self.input_dir, topdown=False):
-            if not dirnames and not filenames:
+        for dirpath, _, _ in os.walk(self.input_dir, topdown=False):
+            if not os.listdir(dirpath):
                 try:
                     os.rmdir(dirpath)
                     self.logger(f"Removed empty directory: {dirpath}")
@@ -95,7 +93,6 @@ class PhotoOrganizer:
 
     def _process_file_with_exif(self, file_path, date_time_str, file_hash):
         try:
-            from datetime import datetime
             dt_object = datetime.strptime(date_time_str, '%Y:%m:%d %H:%M:%S')
             dest_dir = os.path.join(self.output_dir, dt_object.strftime('%Y'), dt_object.strftime('%m'))
             new_filename = dt_object.strftime('%Y%m%d_%H%M%S') + os.path.splitext(file_path)[1]
@@ -105,6 +102,7 @@ class PhotoOrganizer:
                 os.makedirs(dest_dir, exist_ok=True)
                 if os.path.exists(dest_path):
                     existing_file_hash = self._calculate_hash(dest_path)
+                    self.logger(f"  -> Conflict: Comparing hash of '{os.path.basename(file_path)}' ({file_hash}) with existing '{os.path.basename(dest_path)}' ({existing_file_hash})")
                     if existing_file_hash == file_hash:
                         duplicates_dir = os.path.join(self.output_dir, "duplicates")
                         self._move_file_to_duplicates(file_path, duplicates_dir)
@@ -180,24 +178,36 @@ class PhotoOrganizer:
             self.logger(f"Analyzing: {os.path.basename(file_path)}")
             file_hash = self._calculate_hash(file_path)
 
+            # Pre-check to avoid getting date for an obvious duplicate
+            if file_hash in self.file_data:
+                with self.lock:
+                    self.duplicate_files.append(file_path)
+                    self.logger(f"  -> Found duplicate of: {os.path.basename(self.file_data[file_hash]['path'])}")
+                return
+
+            # Slow operations are outside the lock
+            date_time = self._get_exif_datetime(file_path)
+            if not date_time:
+                date_time = self._get_datetime_from_filename(file_path)
+                if date_time:
+                    self.logger(f"  -> Found DateTime from filename: {date_time}")
+
+            # Final check and atomic update
             with self.lock:
                 if file_hash in self.file_data:
+                    # Another thread processed this file while we were getting the date.
                     self.logger(f"  -> Found duplicate of: {os.path.basename(self.file_data[file_hash]['path'])}")
                     self.duplicate_files.append(file_path)
-                    return
-
-            date_time = self._get_exif_datetime(file_path)
-
-            with self.lock:
-                self.file_data[file_hash] = {
-                    'path': file_path,
-                    'datetime': date_time
-                }
-
-            if date_time:
-                self.logger(f"  -> Found DateTimeOriginal: {date_time}")
-            else:
-                self.logger(f"  -> DateTimeOriginal not found.")
+                else:
+                    # This is the first time we see this file, record it.
+                    self.file_data[file_hash] = {
+                        'path': file_path,
+                        'datetime': date_time
+                    }
+                    if date_time:
+                        self.logger(f"  -> Found DateTime: {date_time}")
+                    else:
+                        self.logger(f"  -> DateTime not found.")
 
         except Exception as e:
             self.logger(f"Error processing {file_path}: {e}")
@@ -206,6 +216,45 @@ class PhotoOrganizer:
                 self.processed_files += 1
             if self.progress_callback:
                 self.progress_callback(self.processed_files, len(self.file_list))
+
+    def _get_datetime_from_filename(self, file_path):
+        filename = os.path.basename(file_path)
+        patterns = [
+            (re.compile(r'(?:IMG|VID|PANO)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
+            (re.compile(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
+            (re.compile(r'Screenshot_(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
+            (re.compile(r'WIN_(\d{4})(\d{2})(\d{2})_(\d{2})_(\d{2})_(\d{2})(?:\(\d+\))?'), 'groups'),
+            (re.compile(r'(?:mmexport|video_)(\d{10,13})'), 'ts'),
+        ]
+
+        for pattern, p_type in patterns:
+            match = pattern.search(filename)
+            if not match:
+                continue
+
+            try:
+                if p_type == 'groups':
+                    y, m, d, H, M, S = (int(g) for g in match.groups())
+                    dt = datetime(y, m, d, H, M, S)
+                    return dt.strftime('%Y:%m:%d %H:%M:%S')
+                
+                elif p_type == 'ts':
+                    ts_str = match.group(1)
+                    ts = int(ts_str)
+                    if len(ts_str) == 13:
+                        ts /= 1000
+                    
+                    if not (0 <= ts < 32503680000): # Sanity check for valid timestamp range
+                        continue
+
+                    dt = datetime.fromtimestamp(ts)
+                    return dt.strftime('%Y:%m:%d %H:%M:%S')
+
+            except (ValueError, TypeError, OSError):
+                self.logger(f"  -> Found a date-like pattern in '{filename}' but it was invalid.")
+                continue
+                
+        return None
 
     def _calculate_hash(self, file_path):
         hasher = hashlib.sha256()
@@ -217,12 +266,32 @@ class PhotoOrganizer:
     def _get_exif_datetime(self, file_path):
         try:
             exiftool_cmd = self.exiftool_path if self.exiftool_path else 'exiftool'
-            cmd = [exiftool_cmd, "-T", "-DateTimeOriginal", file_path]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError:
+            preferred_tags = ['DateTimeOriginal', 'CreateDate', 'CreationDate', 'TrackCreateDate', 'MediaCreateDate']
+            cmd = [exiftool_cmd]
+            for tag in preferred_tags:
+                cmd.append(f'-{tag}')
+            cmd.append("-s3")
+            cmd.append(file_path)
+
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, creationflags=subprocess.CREATE_NO_WINDOW)
+
+            if result.returncode not in [0, 1]:
+                self.logger(f"Exiftool error for {os.path.basename(file_path)}: {result.stderr}")
+                return None
+
+            output_lines = result.stdout.strip().split('\n')
+            if output_lines and output_lines[0]:
+                date_str = output_lines[0]
+                if date_str.startswith('0000:00:00'):
+                    return None
+                if len(date_str) >= 19:
+                    return date_str[:19].replace("-", ":")
             return None
+
         except FileNotFoundError:
             self.logger(f"Error: '{exiftool_cmd}' not found. Please specify the full path or add it to your system's PATH.")
-            self.cancel_event.set() # Stop the whole process
+            self.cancel_event.set()
+            return None
+        except Exception as e:
+            self.logger(f"Error getting EXIF for {os.path.basename(file_path)}: {e}")
             return None
