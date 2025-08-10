@@ -30,6 +30,7 @@ class PhotoOrganizer:
         self.duplicate_files = []
         self.processed_file_entries = [] # New list to store FileEntry objects
         self.moved_files = 0
+        self.processed_moves_count = 0
         self.no_exif_files = 0
         self.source_file_types = {}
         self.dest_file_types = {}
@@ -135,8 +136,11 @@ class PhotoOrganizer:
             self.logger(f"Moved: {os.path.basename(file_path)} -> {os.path.relpath(dest_path, self.output_dir)}")
             with self.lock:
                 self.moved_files += 1
+                self.processed_moves_count += 1
                 ext = os.path.splitext(dest_path)[1].lower()
                 self.dest_file_types[ext] = self.dest_file_types.get(ext, 0) + 1
+                if self.progress_callback:
+                    self.progress_callback(self.processed_moves_count, len(self.processed_file_entries), phase="move")
 
         except Exception as e:
             self.logger(f"Error processing {file_path} with exif: {e}")
@@ -148,8 +152,11 @@ class PhotoOrganizer:
         self.logger(f"Moved (no EXIF): {os.path.basename(file_path)} -> no_exif/{os.path.basename(file_path)}")
         with self.lock:
             self.no_exif_files += 1
+            self.processed_moves_count += 1
             ext = os.path.splitext(file_path)[1].lower()
             self.dest_file_types[ext] = self.dest_file_types.get(ext, 0) + 1
+            if self.progress_callback:
+                self.progress_callback(self.processed_moves_count, len(self.processed_file_entries), phase="move")
 
     def _move_file_to_duplicates(self, file_path, duplicates_dir):
         dest_path = os.path.join(duplicates_dir, os.path.basename(file_path))
@@ -162,8 +169,11 @@ class PhotoOrganizer:
             shutil.move(file_path, dest_path)
         self.logger(f"Moved (duplicate): {os.path.basename(file_path)} -> duplicates/{os.path.basename(dest_path)}")
         with self.lock:
+            self.processed_moves_count += 1
             ext = os.path.splitext(file_path)[1].lower()
             self.dest_file_types[ext] = self.dest_file_types.get(ext, 0) + 1
+            if self.progress_callback:
+                self.progress_callback(self.processed_moves_count, len(self.processed_file_entries), phase="move")
 
     def get_statistics(self):
         return {
