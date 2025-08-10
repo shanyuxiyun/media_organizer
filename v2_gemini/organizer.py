@@ -6,6 +6,7 @@ import time
 import re
 from datetime import datetime
 from dataclasses import dataclass
+import shutil
 from queue import Queue
 
 @dataclass
@@ -129,7 +130,7 @@ class PhotoOrganizer:
                         while os.path.exists(dest_path):
                             dest_path = os.path.join(dest_dir, f"{base}_{count}{ext}")
                             count += 1
-                os.rename(file_path, dest_path)
+                shutil.move(file_path, dest_path)
             
             self.logger(f"Moved: {os.path.basename(file_path)} -> {os.path.relpath(dest_path, self.output_dir)}")
             with self.lock:
@@ -143,7 +144,7 @@ class PhotoOrganizer:
     def _move_file_to_no_exif(self, file_path, no_exif_dir):
         dest_path = os.path.join(no_exif_dir, os.path.basename(file_path))
         if not self.dry_run:
-            os.rename(file_path, dest_path)
+            shutil.move(file_path, dest_path)
         self.logger(f"Moved (no EXIF): {os.path.basename(file_path)} -> no_exif/{os.path.basename(file_path)}")
         with self.lock:
             self.no_exif_files += 1
@@ -158,7 +159,7 @@ class PhotoOrganizer:
                 base, ext = os.path.splitext(os.path.basename(file_path))
                 dest_path = os.path.join(duplicates_dir, f"{base}_{count}{ext}")
                 count += 1
-            os.rename(file_path, dest_path)
+            shutil.move(file_path, dest_path)
         self.logger(f"Moved (duplicate): {os.path.basename(file_path)} -> duplicates/{os.path.basename(dest_path)}")
         with self.lock:
             ext = os.path.splitext(file_path)[1].lower()
@@ -176,14 +177,23 @@ class PhotoOrganizer:
         }
 
     def _analysis_worker(self):
-        while not self.file_queue.empty():
+        while True:
             if self.cancel_event.is_set():
                 break
+
             if self.pause_event.is_set():
                 time.sleep(0.1)
                 continue
 
-            file_path = self.file_queue.get()
+            try:
+                file_path = self.file_queue.get(timeout=0.1)
+            except queue.Empty:
+                with self.lock:
+                    if self.processed_files == len(self.file_list):
+                        break # All files processed, worker can exit
+                time.sleep(0.1) # Wait a bit before checking again
+                continue
+
             try:
                 self._process_file(file_path)
             finally:
