@@ -179,10 +179,16 @@ class PhotoOrganizerApp(tk.Tk):
         self.log_text.config(state=tk.DISABLED)
         self.log_text.see(tk.END)
 
-    def update_progress(self, current, total):
-        self.progress_bar["value"] = current
-        self.progress_bar["maximum"] = total
-        self.status_label.config(text=f"Processing... {current}/{total}")
+    def update_progress(self, current, total, phase="analyze"):
+        if phase == "analyze":
+            self.progress_bar["value"] = current
+            self.progress_bar["maximum"] = total
+            self.status_label.config(text=f"Analyzing... {current}/{total}")
+        elif phase == "move":
+            self.progress_bar["value"] = current
+            self.progress_bar["maximum"] = total
+            self.status_label.config(text=f"Moving files... {current}/{total}")
+        
         if current == total:
             self.status_label.config(text="Done!")
 

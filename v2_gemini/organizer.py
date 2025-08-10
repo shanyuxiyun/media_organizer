@@ -1,4 +1,5 @@
 import os
+import queue
 import subprocess
 import threading
 import hashlib
@@ -243,6 +244,9 @@ class PhotoOrganizer:
             (re.compile(r'Screenshot_(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
             (re.compile(r'WIN_(\d{4})(\d{2})(\d{2})_(\d{2})_(\d{2})_(\d{2})(?:\(\d+\))?'), 'groups'),
             (re.compile(r'(?:mmexport|video_|wx_camera_)(\d{10,13})'), 'ts'),
+
+            # NEW pattern for retouch_YYYYMMDDHHMMSSms.jpg
+            (re.compile(r'retouch_(\d{14})(\d{0,3})?'), 'retouch_groups'),
         ]
 
         for pattern, p_type in patterns:
@@ -267,6 +271,18 @@ class PhotoOrganizer:
 
                     dt = datetime.fromtimestamp(ts)
                     return dt.strftime('%Y:%m:%d %H:%M:%S')
+
+                elif p_type == 'retouch_groups':
+                    date_time_str = match.group(1)
+                    if len(date_time_str) >= 14:
+                        y = int(date_time_str[0:4])
+                        m = int(date_time_str[4:6])
+                        d = int(date_time_str[6:8])
+                        H = int(date_time_str[8:10])
+                        M = int(date_time_str[10:12])
+                        S = int(date_time_str[12:14])
+                        dt = datetime(y, m, d, H, M, S)
+                        return dt.strftime('%Y:%m:%d %H:%M:%S')
 
             except (ValueError, TypeError, OSError):
                 self.logger(f"  -> Found a date-like pattern in '{filename}' but it was invalid.")
