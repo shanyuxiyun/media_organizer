@@ -5,7 +5,14 @@ import hashlib
 import time
 import re
 from datetime import datetime
+from dataclasses import dataclass
 from queue import Queue
+
+@dataclass
+class FileEntry:
+    path: str
+    hash: str
+    datetime: str | None
 
 class PhotoOrganizer:
     def __init__(self, input_dir, output_dir, exiftool_path, logger, progress_callback=None, dry_run=False):
@@ -20,6 +27,7 @@ class PhotoOrganizer:
         self.processed_files = 0
         self.file_data = {}
         self.duplicate_files = []
+        self.processed_file_entries = [] # New list to store FileEntry objects
         self.moved_files = 0
         self.no_exif_files = 0
         self.source_file_types = {}
@@ -55,7 +63,7 @@ class PhotoOrganizer:
 
         self.file_queue.join()
         self.logger("File analysis complete.")
-        self.logger(f"Found {len(self.duplicate_files)} duplicate files.")
+        # self.logger(f"Found {len(self.duplicate_files)} duplicate files.") # This will be calculated in process_files
         self.process_files()
 
     def process_files(self):
@@ -66,15 +74,23 @@ class PhotoOrganizer:
             os.makedirs(duplicates_dir, exist_ok=True)
             os.makedirs(no_exif_dir, exist_ok=True)
 
-        for file_hash, data in self.file_data.items():
-            file_path = data['path']
-            if data['datetime']:
-                self._process_file_with_exif(file_path, data['datetime'], file_hash)
-            else:
-                self._move_file_to_no_exif(file_path, no_exif_dir)
+        processed_hashes = set()
+        self.duplicate_files = [] # Reset for accurate count
 
-        for file_path in self.duplicate_files:
-            self._move_file_to_duplicates(file_path, duplicates_dir)
+        for entry in self.processed_file_entries:
+            if entry.hash in processed_hashes:
+                # This is a duplicate of a file we've already processed as unique
+                self._move_file_to_duplicates(entry.path, duplicates_dir)
+                self.duplicate_files.append(entry.path) # Keep track of all duplicates
+            else:
+                # This is the first time we see this hash, treat as unique
+                processed_hashes.add(entry.hash)
+                if entry.datetime:
+                    self._process_file_with_exif(entry.path, entry.datetime, entry.hash)
+                else:
+                    self._move_file_to_no_exif(entry.path, no_exif_dir)
+
+        self.logger(f"Found {len(self.duplicate_files)} duplicate files.") # Log after processing
 
         if not self.dry_run:
             self._remove_empty_dirs()
@@ -178,36 +194,18 @@ class PhotoOrganizer:
             self.logger(f"Analyzing: {os.path.basename(file_path)}")
             file_hash = self._calculate_hash(file_path)
 
-            # Pre-check to avoid getting date for an obvious duplicate
-            if file_hash in self.file_data:
-                with self.lock:
-                    self.duplicate_files.append(file_path)
-                    self.logger(f"  -> Found duplicate of: {os.path.basename(self.file_data[file_hash]['path'])}")
-                return
-
-            # Slow operations are outside the lock
             date_time = self._get_exif_datetime(file_path)
             if not date_time:
                 date_time = self._get_datetime_from_filename(file_path)
                 if date_time:
                     self.logger(f"  -> Found DateTime from filename: {date_time}")
 
-            # Final check and atomic update
             with self.lock:
-                if file_hash in self.file_data:
-                    # Another thread processed this file while we were getting the date.
-                    self.logger(f"  -> Found duplicate of: {os.path.basename(self.file_data[file_hash]['path'])}")
-                    self.duplicate_files.append(file_path)
+                self.processed_file_entries.append(FileEntry(path=file_path, hash=file_hash, datetime=date_time))
+                if date_time:
+                    self.logger(f"  -> Found DateTime: {date_time}")
                 else:
-                    # This is the first time we see this file, record it.
-                    self.file_data[file_hash] = {
-                        'path': file_path,
-                        'datetime': date_time
-                    }
-                    if date_time:
-                        self.logger(f"  -> Found DateTime: {date_time}")
-                    else:
-                        self.logger(f"  -> DateTime not found.")
+                    self.logger(f"  -> DateTime not found.")
 
         except Exception as e:
             self.logger(f"Error processing {file_path}: {e}")
@@ -224,7 +222,7 @@ class PhotoOrganizer:
             (re.compile(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
             (re.compile(r'Screenshot_(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
             (re.compile(r'WIN_(\d{4})(\d{2})(\d{2})_(\d{2})_(\d{2})_(\d{2})(?:\(\d+\))?'), 'groups'),
-            (re.compile(r'(?:mmexport|video_)(\d{10,13})'), 'ts'),
+            (re.compile(r'(?:mmexport|video_|wx_camera_)(\d{10,13})'), 'ts'),
         ]
 
         for pattern, p_type in patterns:
