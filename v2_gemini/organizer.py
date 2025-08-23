@@ -243,7 +243,7 @@ class PhotoOrganizer:
             (re.compile(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
             (re.compile(r'Screenshot_(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(?:\(\d+\))?'), 'groups'),
             (re.compile(r'WIN_(\d{4})(\d{2})(\d{2})_(\d{2})_(\d{2})_(\d{2})(?:\(\d+\))?'), 'groups'),
-            (re.compile(r'(?:mmexport|video_|wx_camera_)(\d{10,13})'), 'ts'),
+            (re.compile(r'(?:mmexport|video_|image_|wx_camera_)(\d{10,13})'), 'ts'),
 
             # NEW pattern for retouch_YYYYMMDDHHMMSSms.jpg
             (re.compile(r'retouch_(\d{14})(\d{0,3})?'), 'retouch_groups'),
@@ -300,7 +300,8 @@ class PhotoOrganizer:
     def _get_exif_datetime(self, file_path):
         try:
             exiftool_cmd = self.exiftool_path if self.exiftool_path else 'exiftool'
-            preferred_tags = ['DateTimeOriginal', 'CreateDate', 'CreationDate', 'TrackCreateDate', 'MediaCreateDate']
+            preferred_tags = ['DateTimeOriginal', 'CreateDate', 'CreationDate', 'TrackCreateDate', 'MediaCreateDate','ModifyDate',
+                              'FileCreateDate']
             cmd = [exiftool_cmd]
             for tag in preferred_tags:
                 cmd.append(f'-{tag}')
